@@ -1,12 +1,15 @@
-const CACHE_NAME = "odysseus-static-v2";
+const CACHE_NAME = "odysseus-static-v5";
 
 const STATIC_ASSETS = [
+  "./",
   "./index.html",
   "./assets/css/style.css",
   "./assets/js/app.js",
   "./manifest.webmanifest",
   "./assets/icons/icon-192.png",
   "./assets/icons/icon-512.png",
+  "./assets/screenshots/screenshot-mobile.png",
+  "./assets/screenshots/screenshot-wide.png",
 ];
 
 self.addEventListener("install", event => {

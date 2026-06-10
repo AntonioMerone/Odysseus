@@ -1,3 +1,6 @@
+
+
+
 // DATA
 const CITIES = [
   { name:"Tokyo", country:"Giappone", flag:"🇯🇵", tz:"Asia/Tokyo", lat:35.6762, lon:139.6503 },
@@ -110,12 +113,28 @@ function getDiff(tz) {
 function getStatus(tz) {
   const t = getLocalTime(tz);
   const hour = t.getHours() + t.getMinutes() / 60;
-  if (hour >= 9 && hour < 13) return { label:"Orario lavorativo", cls:"status-work" };
-  if (hour >= 13 && hour < 14) return { label:"Pausa pranzo", cls:"status-work" };
-  if (hour >= 14 && hour < 18) return { label:"Orario lavorativo", cls:"status-work" };
-  if (hour >= 7 && hour < 9) return { label:"Inizio giornata", cls:"status-early" };
-  if (hour >= 18 && hour < 21) return { label:"Sera", cls:"status-evening" };
-  return { label:"Fuori orario", cls:"status-night" };
+
+  if (hour >= 5 && hour < 7) {
+    return { label:"Mattina presto", cls:"status-early" };
+  }
+
+  if (hour >= 7 && hour < 9) {
+    return { label:"Inizio giornata", cls:"status-early" };
+  }
+
+  if ((hour >= 9 && hour < 13) || (hour >= 14 && hour < 18)) {
+    return { label:"Orario lavorativo", cls:"status-work" };
+  }
+
+  if (hour >= 13 && hour < 14) {
+    return { label:"Pausa pranzo", cls:"status-break" };
+  }
+
+  if (hour >= 18 && hour < 21) {
+    return { label:"Sera", cls:"status-evening" };
+  }
+
+  return { label:"Notte", cls:"status-night" };
 }
 
 function getDayPercent(tz) {
@@ -346,6 +365,27 @@ function removeCity(name) {
   render();
 }
 
+function moveCity(name, direction) {
+  const index = state.cities.findIndex(city => city.name === name);
+  const targetIndex = index + direction;
+
+  if (index < 0 || targetIndex < 0 || targetIndex >= state.cities.length) return;
+
+  const [city] = state.cities.splice(index, 1);
+  state.cities.splice(targetIndex, 0, city);
+  state.showDelete = null;
+  saveCities();
+  render();
+}
+
+function moveCityUp(name) {
+  moveCity(name, -1);
+}
+
+function moveCityDown(name) {
+  moveCity(name, 1);
+}
+
 // TOAST
 let toastTimer;
 function showToast(msg) {
@@ -370,7 +410,7 @@ function buildHTML() {
   return `
   <div class="header">
     <div class="header-top">
-      <span class="app-title">World Planner</span>
+      <span class="app-title">Odysseus</span>
       <span class="local-time-mini">${formatTime(homeTime)}</span>
     </div>
     <div class="search-wrap" id="search-wrap">
@@ -418,7 +458,7 @@ function buildHTML() {
     </div>
     ` : `
     <div class="section-label">Le tue città · ${state.cities.length}</div>
-    ${state.cities.map(c => buildCityCard(c)).join("")}
+    ${state.cities.map((c, index) => buildCityCard(c, index)).join("")}
     `}
   </div>
 
@@ -481,7 +521,7 @@ function renderSearchResults() {
   }
 }
 
-function buildCityCard(c) {
+function buildCityCard(c, index) {
   const t = getLocalTime(c.tz);
   const pct = getDayPercent(c.tz);
   const color = getTimelineColor(c.tz);
@@ -490,6 +530,8 @@ function buildCityCard(c) {
   const weather = state.weather[c.name];
   const weatherUnavailable = state.weatherUnavailable[c.name];
   const isShowDelete = state.showDelete === c.name;
+  const isFirst = index === 0;
+  const isLast = index === state.cities.length - 1;
 
   return `
   <div class="city-card ${isShowDelete ? 'show-delete':''}" data-city="${escHtml(c.name)}" id="card-${escHtml(c.name).replace(/\s/g,'_')}">
@@ -503,8 +545,14 @@ function buildCityCard(c) {
         <div class="city-country">${escHtml(c.country)} · ${escHtml(diff)}</div>
       </div>
       <div class="city-card-right">
-        <div class="city-time">${formatTime(t)}</div>
-        <div class="city-diff">${formatDate(t)}</div>
+        <div class="reorder-controls">
+          <button class="reorder-btn" data-move-up="${escHtml(c.name)}" title="Sposta su" ${isFirst ? "disabled" : ""}>↑</button>
+          <button class="reorder-btn" data-move-down="${escHtml(c.name)}" title="Sposta giù" ${isLast ? "disabled" : ""}>↓</button>
+        </div>
+        <div class="city-time-wrap">
+          <div class="city-time">${formatTime(t)}</div>
+          <div class="city-diff">${formatDate(t)}</div>
+        </div>
       </div>
     </div>
     <div class="timeline-bar">
@@ -551,9 +599,23 @@ function attachEvents() {
     });
   });
 
+  document.querySelectorAll("[data-move-up]").forEach(el => {
+    el.addEventListener("click", e => {
+      e.stopPropagation();
+      moveCityUp(el.dataset.moveUp);
+    });
+  });
+
+  document.querySelectorAll("[data-move-down]").forEach(el => {
+    el.addEventListener("click", e => {
+      e.stopPropagation();
+      moveCityDown(el.dataset.moveDown);
+    });
+  });
+
   document.querySelectorAll(".city-card").forEach(card => {
     card.addEventListener("click", e => {
-      if (e.target.closest("[data-remove]")) return;
+      if (e.target.closest("[data-remove], [data-move-up], [data-move-down]")) return;
       const name = card.dataset.city;
       state.showDelete = state.showDelete === name ? null : name;
       render();
@@ -617,9 +679,8 @@ function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
 
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./service-worker.js").catch(() => {
-      // The app works normally even if service worker registration fails.
-    });
+    navigator.serviceWorker.register("./service-worker.js")
+      .catch(error => console.warn("Service worker registration failed:", error));
   });
 }
 
