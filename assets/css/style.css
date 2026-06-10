@@ -117,6 +117,8 @@
   }
   .search-item:last-child { border-bottom: none; }
   .search-item:hover { background: var(--card-hover); }
+  .search-message { cursor: default; }
+  .search-message:hover { background: transparent; }
   .search-item-name { font-size: 14px; font-weight: 500; }
   .search-item-tz { font-size: 12px; color: var(--text-dim); }
 

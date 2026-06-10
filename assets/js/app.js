@@ -60,9 +60,13 @@ const WMO_DESC = {
 let state = {
   query: "",
   results: [],
+  searchLoading: false,
+  searchError: "",
   cities: loadCities(),
   weather: {}, // key: cityName -> { temp, icon, desc }
+  weatherUnavailable: {},
   homeWeather: null,
+  homeWeatherUnavailable: false,
   showDelete: null,
 };
 
@@ -142,29 +146,171 @@ async function fetchWeather(city) {
 
 async function loadAllWeather() {
   const homeWeather = await fetchWeather(HOME);
-  if (homeWeather) { state.homeWeather = homeWeather; render(); }
+  if (homeWeather) {
+    state.homeWeather = homeWeather;
+    state.homeWeatherUnavailable = false;
+  } else {
+    state.homeWeatherUnavailable = true;
+  }
+  render();
 
   for (const city of state.cities) {
-    const cityData = findCityByName(city.name) || city;
+    const cityData = hasCoordinates(city) ? city : findCityByName(city.name) || city;
     const weather = await fetchWeather(cityData);
-    if (weather) { state.weather[city.name] = weather; render(); }
+    if (weather) {
+      state.weather[city.name] = weather;
+      delete state.weatherUnavailable[city.name];
+    } else {
+      state.weatherUnavailable[city.name] = true;
+    }
+    render();
   }
 }
 
 // SEARCH
+let searchTimer;
+let isOutsideClickBound = false;
+
 function findCityByName(name) {
   return CITIES.find(city => city.name === name);
 }
 
+function hasCoordinates(city) {
+  return Number.isFinite(city.lat) && Number.isFinite(city.lon);
+}
+
+function countryCodeToFlag(countryCode) {
+  if (!countryCode || countryCode.length !== 2) return "🌍";
+  return countryCode
+    .toUpperCase()
+    .replace(/./g, char => String.fromCodePoint(127397 + char.charCodeAt(0)));
+}
+
+function foldText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[øØ]/g, "o")
+    .replace(/[æÆ]/g, "ae")
+    .replace(/[åÅ]/g, "a");
+}
+
+function normalizeGeocodingCity(city, query) {
+  const lat = city.latitude;
+  const lon = city.longitude;
+  const queryText = foldText(query);
+  const nameText = foldText(city.name);
+  const admin2Text = foldText(city.admin2);
+  const name = city.admin2 && !nameText.includes(queryText) && admin2Text.includes(queryText)
+    ? city.admin2
+    : city.name;
+
+  return {
+    name,
+    country: city.country || city.country_code || "N/D",
+    country_code: city.country_code || "",
+    flag: countryCodeToFlag(city.country_code),
+    tz: city.timezone || "UTC",
+    lat,
+    lon,
+    latitude: lat,
+    longitude: lon,
+    admin1: city.admin1 || "",
+  };
+}
+
+function getCityLabel(city) {
+  return [city.admin1, city.country].filter(Boolean).join(", ");
+}
+
+function getCityKey(city) {
+  return [city.name, city.country_code || city.country, city.admin1 || "", city.tz].join("|");
+}
+
+function mergeSearchResults(localResults, apiResults) {
+  const seen = new Set();
+
+  return [...localResults, ...apiResults].filter(city => {
+    const key = getCityKey(city);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 10);
+}
+
+async function fetchGeocodingResults(query) {
+  if (!navigator.onLine) throw new Error("Offline");
+
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=10&language=it&format=json`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("Geocoding request failed");
+
+  const data = await response.json();
+  return (data.results || []).map(city => normalizeGeocodingCity(city, query));
+}
+
 function handleSearch(value) {
   state.query = value;
-  if (!value.trim()) { state.results = []; render(); return; }
+  clearTimeout(searchTimer);
 
-  const query = value.toLowerCase();
+  const query = value.trim();
+  if (!query) {
+    state.results = [];
+    state.searchLoading = false;
+    state.searchError = "";
+    renderSearchResults();
+    return;
+  }
+
+  updateLocalSearchResults(query);
+
+  if (query.length < 3) {
+    state.searchLoading = false;
+    state.searchError = "";
+    renderSearchResults();
+    return;
+  }
+
+  state.searchLoading = true;
+  state.searchError = "";
+  renderSearchResults();
+
+  searchTimer = setTimeout(() => updateSearchResults(query), 180);
+}
+
+function updateLocalSearchResults(query) {
+  const normalizedQuery = query.toLowerCase();
+
   state.results = CITIES.filter(city =>
-    city.name.toLowerCase().includes(query) || city.country.toLowerCase().includes(query)
+    city.name.toLowerCase().includes(normalizedQuery) || city.country.toLowerCase().includes(normalizedQuery)
   ).slice(0, 6);
-  render();
+}
+
+async function updateSearchResults(value) {
+  const searchInput = document.getElementById("search-input");
+  const currentValue = (searchInput?.value ?? value).trim();
+
+  state.query = currentValue;
+  if (currentValue.length < 3) return;
+
+  try {
+    const localResults = state.results;
+    const apiResults = await fetchGeocodingResults(currentValue);
+
+    if (state.query.trim() !== currentValue) return;
+
+    state.results = mergeSearchResults(localResults, apiResults);
+    state.searchError = "";
+  } catch {
+    if (state.query.trim() !== currentValue) return;
+    state.searchError = navigator.onLine ? "Errore durante la ricerca" : "Ricerca non disponibile offline";
+  } finally {
+    if (state.query.trim() === currentValue) {
+      state.searchLoading = false;
+      renderSearchResults();
+    }
+  }
 }
 
 function addCity(city) {
@@ -172,12 +318,21 @@ function addCity(city) {
     showToast("Città già aggiunta");
     return;
   }
+  clearTimeout(searchTimer);
   state.cities.push(city);
   saveCities();
   state.query = "";
   state.results = [];
+  state.searchLoading = false;
+  state.searchError = "";
   fetchWeather(city).then(w => {
-    if (w) { state.weather[city.name] = w; render(); }
+    if (w) {
+      state.weather[city.name] = w;
+      delete state.weatherUnavailable[city.name];
+    } else {
+      state.weatherUnavailable[city.name] = true;
+    }
+    render();
   });
   showToast(`${city.flag} ${city.name} aggiunta`);
   render();
@@ -229,18 +384,7 @@ function buildHTML() {
         autocomplete="off"
         autocorrect="off"
       />
-      ${state.results.length > 0 ? `
-      <div class="search-dropdown" id="search-dropdown">
-        ${state.results.map(c => `
-          <div class="search-item" data-add="${escHtml(c.name)}">
-            <span>
-              <span class="search-item-name">${c.flag} ${escHtml(c.name)}</span>
-              <span style="color:var(--text-faint);margin-left:4px;font-size:12px">${escHtml(c.country)}</span>
-            </span>
-            <span class="search-item-tz">${formatTime(getLocalTime(c.tz))}</span>
-          </div>
-        `).join("")}
-      </div>` : ""}
+      ${buildSearchDropdown()}
     </div>
   </div>
 
@@ -258,7 +402,9 @@ function buildHTML() {
           <span class="weather-icon-large">${state.homeWeather.icon}</span>
           <span class="home-temp">${state.homeWeather.temp}°C</span>
           <span class="home-weather-desc">${state.homeWeather.desc}</span>
-        ` : `<span class="city-weather-loading">⏳ Caricamento meteo...</span>`}
+        ` : state.homeWeatherUnavailable
+          ? `<span class="city-weather-loading">Meteo non disponibile</span>`
+          : `<span class="city-weather-loading">⏳ Caricamento meteo...</span>`}
       </div>
     </div>
 
@@ -280,6 +426,61 @@ function buildHTML() {
   `;
 }
 
+function buildSearchDropdown() {
+  const hasQuery = state.query.trim().length >= 3;
+  const showEmptyState = hasQuery && !state.searchLoading && !state.searchError && state.results.length === 0;
+
+  if (state.results.length === 0 && !state.searchLoading && !state.searchError && !showEmptyState) return "";
+
+  return `
+      <div class="search-dropdown" id="search-dropdown">
+        ${state.results.map((c, index) => `
+          <div class="search-item" data-add="${escHtml(c.name)}" data-add-index="${index}">
+            <span>
+              <span class="search-item-name">${c.flag} ${escHtml(c.name)}</span>
+              <span style="color:var(--text-faint);margin-left:4px;font-size:12px">${escHtml(getCityLabel(c))}</span>
+            </span>
+            <span class="search-item-tz">${formatTime(getLocalTime(c.tz))}</span>
+          </div>
+        `).join("")}
+        ${state.searchLoading ? `
+          <div class="search-item search-message">
+            <span class="city-weather-loading">Caricamento...</span>
+          </div>
+        ` : ""}
+        ${state.searchError ? `
+          <div class="search-item search-message">
+            <span class="city-weather-loading">${escHtml(state.searchError)}</span>
+          </div>
+        ` : ""}
+        ${showEmptyState ? `
+          <div class="search-item search-message">
+            <span class="city-weather-loading">Nessun risultato</span>
+          </div>
+        ` : ""}
+      </div>`;
+}
+
+function renderSearchResults() {
+  const searchWrap = document.getElementById("search-wrap");
+  const searchInput = document.getElementById("search-input");
+  const keepFocus = document.activeElement === searchInput;
+
+  if (!searchWrap) return;
+
+  document.getElementById("search-dropdown")?.remove();
+
+  if (state.results.length > 0) {
+    searchWrap.insertAdjacentHTML("beforeend", buildSearchDropdown());
+  }
+
+  attachSearchResultEvents();
+
+  if (keepFocus) {
+    searchInput.focus({ preventScroll: true });
+  }
+}
+
 function buildCityCard(c) {
   const t = getLocalTime(c.tz);
   const pct = getDayPercent(c.tz);
@@ -287,6 +488,7 @@ function buildCityCard(c) {
   const diff = getDiff(c.tz);
   const status = getStatus(c.tz);
   const weather = state.weather[c.name];
+  const weatherUnavailable = state.weatherUnavailable[c.name];
   const isShowDelete = state.showDelete === c.name;
 
   return `
@@ -317,6 +519,8 @@ function buildCityCard(c) {
       <div class="city-weather-mini">
         ${weather
           ? `<span class="city-weather-icon">${weather.icon}</span><span class="city-weather-temp">${weather.temp}°C</span>`
+          : weatherUnavailable
+            ? `<span class="city-weather-loading">N/D</span>`
           : `<span class="city-weather-loading">…</span>`
         }
       </div>
@@ -338,13 +542,7 @@ function attachEvents() {
     });
   }
 
-  document.querySelectorAll("[data-add]").forEach(el => {
-    el.addEventListener("click", () => {
-      const name = el.dataset.add;
-      const city = findCityByName(name);
-      if (city) addCity(city);
-    });
-  });
+  attachSearchResultEvents();
 
   document.querySelectorAll("[data-remove]").forEach(el => {
     el.addEventListener("click", e => {
@@ -362,13 +560,31 @@ function attachEvents() {
     });
   });
 
+  attachOutsideSearchListener();
+}
+
+function attachSearchResultEvents() {
+  document.querySelectorAll("[data-add]").forEach(el => {
+    el.addEventListener("click", () => {
+      const index = Number(el.dataset.addIndex);
+      const city = state.results[index] || findCityByName(el.dataset.add);
+      if (city) addCity(city);
+    });
+  });
+}
+
+function attachOutsideSearchListener() {
+  if (isOutsideClickBound) return;
+
   document.addEventListener("click", e => {
-    if (!e.target.closest("#search-wrap")) {
-      state.results = [];
-      state.query = document.getElementById("search-input")?.value || state.query;
-      if (document.getElementById("search-dropdown")) render();
-    }
-  }, { once: true });
+    if (e.target.closest("#search-wrap")) return;
+
+    state.results = [];
+    state.query = document.getElementById("search-input")?.value || state.query;
+    renderSearchResults();
+  });
+
+  isOutsideClickBound = true;
 }
 
 // TICK
@@ -396,12 +612,24 @@ function tick() {
   });
 }
 
+// PWA
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js").catch(() => {
+      // The app works normally even if service worker registration fails.
+    });
+  });
+}
+
 // INIT
+registerServiceWorker();
 render();
 loadAllWeather();
 
 state.cities.forEach(async city => {
-  const cityData = findCityByName(city.name) || city;
+  const cityData = hasCoordinates(city) ? city : findCityByName(city.name) || city;
   const weather = await fetchWeather(cityData);
   if (weather) { state.weather[city.name] = weather; render(); }
 });
