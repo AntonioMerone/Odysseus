@@ -35,7 +35,7 @@ const CITIES = [
   { name:"Varsavia", country:"Polonia", flag:"🇵🇱", tz:"Europe/Warsaw", lat:52.2297, lon:21.0122 },
 ];
 
-const HOME = { name:"Roma", country:"Italia", flag:"🇮🇹", tz:"Europe/Rome", lat:41.9028, lon:12.4964 };
+const DEFAULT_HOME = { name:"Roma", country:"Italia", flag:"🇮🇹", tz:"Europe/Rome", lat:41.9028, lon:12.4964 };
 
 const WMO_MAP = {
   0:"☀️",1:"🌤️",2:"⛅",3:"☁️",
@@ -61,6 +61,12 @@ const WMO_DESC = {
 
 // STATE
 let state = {
+  homeCity: loadHomeCity(),
+  homeSearchOpen: false,
+  homeQuery: "",
+  homeResults: [],
+  homeSearchLoading: false,
+  homeSearchError: "",
   query: "",
   results: [],
   searchLoading: false,
@@ -80,6 +86,13 @@ function loadCities() {
 function saveCities() {
   localStorage.setItem("wtp_cities", JSON.stringify(state.cities));
 }
+function loadHomeCity() {
+  try { return JSON.parse(localStorage.getItem("odysseus_home_city") || "null") || DEFAULT_HOME; }
+  catch { return DEFAULT_HOME; }
+}
+function saveHomeCity() {
+  localStorage.setItem("odysseus_home_city", JSON.stringify(state.homeCity));
+}
 
 // TIME HELPERS
 function getLocalTime(tz) {
@@ -92,7 +105,8 @@ function formatDate(date) {
   return date.toLocaleDateString("it-IT", { weekday:"short", day:"numeric", month:"short" });
 }
 function getDiff(tz) {
-  const home = getLocalTime(HOME.tz);
+  const homeCity = state.homeCity;
+  const home = getLocalTime(homeCity.tz);
   const there = getLocalTime(tz);
   const diffHours = (there - home) / 3600000;
   const rounded = Math.round(diffHours * 2) / 2;
@@ -107,7 +121,7 @@ function getDiff(tz) {
   if (minutes) label += `h${minutes}`;
   else label += "h";
 
-  return `${label} rispetto a Roma`;
+  return `${label} rispetto a ${homeCity.name}`;
 }
 
 function getStatus(tz) {
@@ -164,7 +178,7 @@ async function fetchWeather(city) {
 }
 
 async function loadAllWeather() {
-  const homeWeather = await fetchWeather(HOME);
+  const homeWeather = await fetchWeather(state.homeCity);
   if (homeWeather) {
     state.homeWeather = homeWeather;
     state.homeWeatherUnavailable = false;
@@ -188,6 +202,7 @@ async function loadAllWeather() {
 
 // SEARCH
 let searchTimer;
+let homeSearchTimer;
 let isOutsideClickBound = false;
 
 function findCityByName(name) {
@@ -301,7 +316,11 @@ function handleSearch(value) {
 function updateLocalSearchResults(query) {
   const normalizedQuery = query.toLowerCase();
 
-  state.results = CITIES.filter(city =>
+  state.results = findLocalCityMatches(normalizedQuery);
+}
+
+function findLocalCityMatches(normalizedQuery) {
+  return CITIES.filter(city =>
     city.name.toLowerCase().includes(normalizedQuery) || city.country.toLowerCase().includes(normalizedQuery)
   ).slice(0, 6);
 }
@@ -330,6 +349,85 @@ async function updateSearchResults(value) {
       renderSearchResults();
     }
   }
+}
+
+function handleHomeSearch(value) {
+  state.homeQuery = value;
+  clearTimeout(homeSearchTimer);
+
+  const query = value.trim();
+  if (!query) {
+    state.homeResults = [];
+    state.homeSearchLoading = false;
+    state.homeSearchError = "";
+    renderHomeSearchResults();
+    return;
+  }
+
+  state.homeResults = findLocalCityMatches(query.toLowerCase());
+
+  if (query.length < 3) {
+    state.homeSearchLoading = false;
+    state.homeSearchError = "";
+    renderHomeSearchResults();
+    return;
+  }
+
+  state.homeSearchLoading = true;
+  state.homeSearchError = "";
+  renderHomeSearchResults();
+
+  homeSearchTimer = setTimeout(() => updateHomeSearchResults(query), 180);
+}
+
+async function updateHomeSearchResults(value) {
+  const homeInput = document.getElementById("home-search-input");
+  const currentValue = (homeInput?.value ?? value).trim();
+
+  state.homeQuery = currentValue;
+  if (currentValue.length < 3) return;
+
+  try {
+    const localResults = state.homeResults;
+    const apiResults = await fetchGeocodingResults(currentValue);
+
+    if (state.homeQuery.trim() !== currentValue) return;
+
+    state.homeResults = mergeSearchResults(localResults, apiResults);
+    state.homeSearchError = "";
+  } catch {
+    if (state.homeQuery.trim() !== currentValue) return;
+    state.homeSearchError = navigator.onLine ? "Errore durante la ricerca" : "Ricerca non disponibile offline";
+  } finally {
+    if (state.homeQuery.trim() === currentValue) {
+      state.homeSearchLoading = false;
+      renderHomeSearchResults();
+    }
+  }
+}
+
+function setHomeCity(city) {
+  clearTimeout(homeSearchTimer);
+  state.homeCity = city;
+  state.homeSearchOpen = false;
+  state.homeQuery = "";
+  state.homeResults = [];
+  state.homeSearchLoading = false;
+  state.homeSearchError = "";
+  state.homeWeather = null;
+  state.homeWeatherUnavailable = false;
+  saveHomeCity();
+  render();
+
+  fetchWeather(city).then(weather => {
+    if (weather) {
+      state.homeWeather = weather;
+      state.homeWeatherUnavailable = false;
+    } else {
+      state.homeWeatherUnavailable = true;
+    }
+    render();
+  });
 }
 
 function addCity(city) {
@@ -405,7 +503,16 @@ function render() {
 }
 
 function buildHTML() {
-  const homeTime = getLocalTime(HOME.tz);
+  return `
+  ${buildHeader()}
+  ${buildMainContent()}
+  ${buildToast()}
+  `;
+}
+
+function buildHeader() {
+  const homeCity = state.homeCity;
+  const homeTime = getLocalTime(homeCity.tz);
 
   return `
   <div class="header">
@@ -426,17 +533,34 @@ function buildHTML() {
       />
       ${buildSearchDropdown()}
     </div>
-  </div>
+  </div>`;
+}
 
+function buildMainContent() {
+  return `
   <div class="main">
     <!-- HOME CARD -->
+    ${buildHomeCard()}
+
+    <!-- CITIES -->
+    ${buildCitiesSection()}
+  </div>`;
+}
+
+function buildHomeCard() {
+  const homeCity = state.homeCity;
+  const homeTime = getLocalTime(homeCity.tz);
+
+  return `
     <div class="home-clock-card">
       <div class="home-city-row">
-        <span class="home-flag">${HOME.flag}</span>
-        <span class="home-city-name">${HOME.name} — La tua posizione</span>
+        <span class="home-flag">${homeCity.flag}</span>
+        <span class="home-city-name">${homeCity.name} — La tua posizione</span>
+        <button class="home-change-btn" id="home-change-btn">Cambia</button>
       </div>
       <div class="home-clock-time" id="home-clock">${formatTime(homeTime)}</div>
       <div class="home-date">${formatDate(homeTime)}</div>
+      ${buildHomeSearch()}
       <div class="home-weather-row">
         ${state.homeWeather ? `
           <span class="weather-icon-large">${state.homeWeather.icon}</span>
@@ -446,51 +570,100 @@ function buildHTML() {
           ? `<span class="city-weather-loading">Meteo non disponibile</span>`
           : `<span class="city-weather-loading">⏳ Caricamento meteo...</span>`}
       </div>
-    </div>
+    </div>`;
+}
 
-    <!-- CITIES -->
-    ${state.cities.length === 0 ? `
+function buildHomeSearch() {
+  if (!state.homeSearchOpen) return "";
+
+  return `
+      <div class="home-search-wrap" id="home-search-wrap">
+        <input
+          class="search-input home-search-input"
+          type="text"
+          placeholder="Cerca la tua città..."
+          value="${escHtml(state.homeQuery)}"
+          id="home-search-input"
+          autocomplete="off"
+          autocorrect="off"
+        />
+        ${buildHomeSearchDropdown()}
+      </div>
+      `;
+}
+
+function buildCitiesSection() {
+  if (state.cities.length === 0) return buildEmptyState();
+
+  return `
+    <div class="section-label">Le tue città · ${state.cities.length}</div>
+    ${state.cities.map((c, index) => buildCityCard(c, index)).join("")}
+    `;
+}
+
+function buildEmptyState() {
+  return `
     <div class="section-label">Le tue città</div>
     <div class="empty-state">
       <div class="empty-icon">🌍</div>
       <div class="empty-title">Nessuna città aggiunta</div>
       <div class="empty-sub">Cerca una città in alto e aggiungila alla tua lista per tenere d'occhio i fusi orari.</div>
     </div>
-    ` : `
-    <div class="section-label">Le tue città · ${state.cities.length}</div>
-    ${state.cities.map((c, index) => buildCityCard(c, index)).join("")}
-    `}
-  </div>
+    `;
+}
 
-  <div class="toast" id="toast"></div>
-  `;
+function buildToast() {
+  return `<div class="toast" id="toast"></div>`;
 }
 
 function buildSearchDropdown() {
-  const hasQuery = state.query.trim().length >= 3;
-  const showEmptyState = hasQuery && !state.searchLoading && !state.searchError && state.results.length === 0;
+  return buildCitySearchDropdown({
+    id: "search-dropdown",
+    className: "search-dropdown",
+    query: state.query,
+    results: state.results,
+    loading: state.searchLoading,
+    error: state.searchError,
+    itemAttributes: (city, index) => `data-add="${escHtml(city.name)}" data-add-index="${index}"`,
+  });
+}
 
-  if (state.results.length === 0 && !state.searchLoading && !state.searchError && !showEmptyState) return "";
+function buildHomeSearchDropdown() {
+  return buildCitySearchDropdown({
+    id: "home-search-dropdown",
+    className: "search-dropdown home-search-dropdown",
+    query: state.homeQuery,
+    results: state.homeResults,
+    loading: state.homeSearchLoading,
+    error: state.homeSearchError,
+    itemAttributes: (city, index) => `data-set-home-index="${index}"`,
+  });
+}
+
+function buildCitySearchDropdown({ id, className, query, results, loading, error, itemAttributes }) {
+  const showEmptyState = query.trim().length >= 3 && !loading && !error && results.length === 0;
+
+  if (results.length === 0 && !loading && !error && !showEmptyState) return "";
 
   return `
-      <div class="search-dropdown" id="search-dropdown">
-        ${state.results.map((c, index) => `
-          <div class="search-item" data-add="${escHtml(c.name)}" data-add-index="${index}">
+      <div class="${className}" id="${id}">
+        ${results.map((city, index) => `
+          <div class="search-item" ${itemAttributes(city, index)}>
             <span>
-              <span class="search-item-name">${c.flag} ${escHtml(c.name)}</span>
-              <span style="color:var(--text-faint);margin-left:4px;font-size:12px">${escHtml(getCityLabel(c))}</span>
+              <span class="search-item-name">${city.flag} ${escHtml(city.name)}</span>
+              <span style="color:var(--text-faint);margin-left:4px;font-size:12px">${escHtml(getCityLabel(city))}</span>
             </span>
-            <span class="search-item-tz">${formatTime(getLocalTime(c.tz))}</span>
+            <span class="search-item-tz">${formatTime(getLocalTime(city.tz))}</span>
           </div>
         `).join("")}
-        ${state.searchLoading ? `
+        ${loading ? `
           <div class="search-item search-message">
             <span class="city-weather-loading">Caricamento...</span>
           </div>
         ` : ""}
-        ${state.searchError ? `
+        ${error ? `
           <div class="search-item search-message">
-            <span class="city-weather-loading">${escHtml(state.searchError)}</span>
+            <span class="city-weather-loading">${escHtml(error)}</span>
           </div>
         ` : ""}
         ${showEmptyState ? `
@@ -510,7 +683,12 @@ function renderSearchResults() {
 
   document.getElementById("search-dropdown")?.remove();
 
-  if (state.results.length > 0) {
+  if (
+    state.results.length > 0 ||
+    state.searchLoading ||
+    state.searchError ||
+    (state.query.trim().length >= 3 && state.results.length === 0)
+  ) {
     searchWrap.insertAdjacentHTML("beforeend", buildSearchDropdown());
   }
 
@@ -518,6 +696,31 @@ function renderSearchResults() {
 
   if (keepFocus) {
     searchInput.focus({ preventScroll: true });
+  }
+}
+
+function renderHomeSearchResults() {
+  const homeWrap = document.getElementById("home-search-wrap");
+  const homeInput = document.getElementById("home-search-input");
+  const keepFocus = document.activeElement === homeInput;
+
+  if (!homeWrap) return;
+
+  document.getElementById("home-search-dropdown")?.remove();
+
+  if (
+    state.homeResults.length > 0 ||
+    state.homeSearchLoading ||
+    state.homeSearchError ||
+    (state.homeQuery.trim().length >= 3 && state.homeResults.length === 0)
+  ) {
+    homeWrap.insertAdjacentHTML("beforeend", buildHomeSearchDropdown());
+  }
+
+  attachHomeSearchResultEvents();
+
+  if (keepFocus) {
+    homeInput.focus({ preventScroll: true });
   }
 }
 
@@ -582,6 +785,29 @@ function escHtml(s) {
 
 // EVENTS
 function attachEvents() {
+  const homeChangeButton = document.getElementById("home-change-btn");
+  if (homeChangeButton) {
+    homeChangeButton.addEventListener("click", () => {
+      state.homeSearchOpen = !state.homeSearchOpen;
+      state.homeQuery = "";
+      state.homeResults = [];
+      state.homeSearchLoading = false;
+      state.homeSearchError = "";
+      render();
+    });
+  }
+
+  const homeSearchInput = document.getElementById("home-search-input");
+  if (homeSearchInput) {
+    homeSearchInput.addEventListener("input", e => handleHomeSearch(e.target.value));
+    homeSearchInput.addEventListener("focus", () => {
+      if (homeSearchInput.value) handleHomeSearch(homeSearchInput.value);
+    });
+    homeSearchInput.focus({ preventScroll: true });
+  }
+
+  attachHomeSearchResultEvents();
+
   const searchInput = document.getElementById("search-input");
   if (searchInput) {
     searchInput.addEventListener("input", e => handleSearch(e.target.value));
@@ -635,6 +861,15 @@ function attachSearchResultEvents() {
   });
 }
 
+function attachHomeSearchResultEvents() {
+  document.querySelectorAll("[data-set-home-index]").forEach(el => {
+    el.addEventListener("click", () => {
+      const city = state.homeResults[Number(el.dataset.setHomeIndex)];
+      if (city) setHomeCity(city);
+    });
+  });
+}
+
 function attachOutsideSearchListener() {
   if (isOutsideClickBound) return;
 
@@ -653,7 +888,7 @@ function attachOutsideSearchListener() {
 function tick() {
   const clock = document.getElementById("home-clock");
   if (clock) {
-    clock.textContent = formatTime(getLocalTime(HOME.tz));
+    clock.textContent = formatTime(getLocalTime(state.homeCity.tz));
   }
 
   state.cities.forEach(city => {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "odysseus-static-v5";
+const CACHE_NAME = "odysseus-static-v7";
 
 const STATIC_ASSETS = [
   "./",
