@@ -713,7 +713,10 @@ function buildHeader() {
   return `
   <div class="header">
     <div class="header-top">
-      <span class="app-title">Odysseus</span>
+      <div class="app-brand">
+        <img class="app-logo" src="./assets/brand/odysseus-emblem.png" alt="" width="24" height="24">
+        <span class="app-title">Odysseus</span>
+      </div>
       <span class="local-time-mini">${formatTime(homeTime)}</span>
     </div>
     <div class="search-wrap" id="search-wrap">

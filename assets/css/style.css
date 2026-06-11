@@ -50,6 +50,19 @@
     align-items: center;
     margin-bottom: 16px;
   }
+  .app-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .app-logo {
+    width: 24px;
+    height: 24px;
+    display: block;
+    object-fit: contain;
+    flex-shrink: 0;
+  }
   .app-title {
     font-family: 'Space Grotesk', sans-serif;
     font-size: 13px;

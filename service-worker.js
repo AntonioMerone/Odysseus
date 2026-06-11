@@ -1,13 +1,18 @@
-const CACHE_NAME = "odysseus-static-v12";
+const CACHE_NAME = "odysseus-static-v13";
 
 const STATIC_ASSETS = [
   "./",
   "./index.html",
-  "./assets/css/style.css?v=10",
-  "./assets/js/app.js?v=12",
+  "./assets/css/style.css?v=13",
+  "./assets/js/app.js?v=13",
   "./manifest.webmanifest",
+  "./assets/brand/odysseus-emblem.png",
+  "./assets/icons/favicon-32x32.png",
+  "./assets/icons/apple-touch-icon.png",
   "./assets/icons/icon-192.png",
   "./assets/icons/icon-512.png",
+  "./assets/icons/maskable-192.png",
+  "./assets/icons/maskable-512.png",
   "./assets/screenshots/screenshot-mobile.png",
   "./assets/screenshots/screenshot-wide.png",
 ];
