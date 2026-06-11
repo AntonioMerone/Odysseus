@@ -233,7 +233,7 @@
     position: relative;
     overflow: hidden;
     transition: transform 0.2s, box-shadow 0.2s;
-    cursor: default;
+    cursor: pointer;
   }
   .city-card:active { transform: scale(0.98); }
   .city-card-top {
@@ -258,35 +258,6 @@
   .city-country { font-size: 12px; color: var(--text-dim); }
   .city-card-right {
     text-align: right;
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-  }
-  .reorder-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .reorder-btn {
-    width: 24px;
-    height: 22px;
-    border-radius: 7px;
-    border: 1px solid var(--border);
-    background: rgba(255,255,255,0.04);
-    color: var(--text-dim);
-    font-size: 13px;
-    line-height: 1;
-    cursor: pointer;
-    transition: border-color 0.2s, color 0.2s, background 0.2s;
-  }
-  .reorder-btn:hover:not(:disabled) {
-    border-color: var(--teal);
-    color: var(--teal);
-    background: var(--teal-dim);
-  }
-  .reorder-btn:disabled {
-    opacity: 0.25;
-    cursor: default;
   }
   .city-time-wrap { text-align: right; }
   .city-time {
@@ -371,28 +342,49 @@
   .city-weather-icon { font-size: 16px; }
   .city-weather-loading { font-size: 11px; color: var(--text-faint); }
 
-  /* DELETE BUTTON */
-  .delete-btn {
-    position: absolute;
-    top: 10px;
-    right: -40px;
-    width: 32px; height: 32px;
-    border-radius: 50%;
-    background: rgba(252,129,129,0.15);
-    border: none;
-    color: var(--red);
+  /* CITY ACTIONS */
+  .city-actions {
+    display: none;
+    align-items: stretch;
+    gap: 7px;
+    padding-top: 12px;
+    margin-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .city-card.show-actions .city-actions { display: flex; }
+  .city-action-btn {
+    flex: 1;
+    min-width: 0;
+    min-height: 40px;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.035);
+    color: var(--text-dim);
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: nowrap;
     cursor: pointer;
-    font-size: 14px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: right 0.25s ease, background 0.2s;
+    gap: 5px;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
   }
-  .city-card:hover .delete-btn,
-  .city-card.show-delete .delete-btn {
-    right: 12px;
+  .city-action-btn:hover:not(:disabled) {
+    border-color: var(--teal);
+    color: var(--teal);
+    background: var(--teal-dim);
   }
-  .delete-btn:hover { background: rgba(252,129,129,0.3); }
+  .city-action-remove {
+    color: rgba(252,129,129,0.8);
+  }
+  .city-action-remove:hover {
+    border-color: rgba(252,129,129,0.45);
+    color: var(--red);
+    background: rgba(252,129,129,0.1);
+  }
 
   /* EMPTY STATE */
   .empty-state {

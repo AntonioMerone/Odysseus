@@ -59,6 +59,14 @@ const WMO_DESC = {
   95:"Temporale",96:"Temporale con grandine",99:"Temporale forte",
 };
 
+const DEBUG_WEATHER = (() => {
+  try { return localStorage.getItem("odysseus_debug_weather") === "true"; }
+  catch { return false; }
+})();
+
+const WEATHER_CACHE_KEY = "odysseus_weather_cache";
+const WEATHER_CACHE_MAX_AGE = 30 * 60 * 1000;
+
 // STATE
 let state = {
   homeCity: loadHomeCity(),
@@ -79,19 +87,141 @@ let state = {
   showDelete: null,
 };
 
+let weatherCache = loadWeatherCache();
+hydrateWeatherStateFromCache();
+
 function loadCities() {
-  try { return JSON.parse(localStorage.getItem("wtp_cities") || "[]"); }
+  try {
+    const cities = JSON.parse(localStorage.getItem("wtp_cities") || "[]")
+      .map(normalizeStoredCity)
+      .filter(Boolean);
+    localStorage.setItem("wtp_cities", JSON.stringify(cities));
+    return cities;
+  }
   catch { return []; }
 }
 function saveCities() {
   localStorage.setItem("wtp_cities", JSON.stringify(state.cities));
 }
 function loadHomeCity() {
-  try { return JSON.parse(localStorage.getItem("odysseus_home_city") || "null") || DEFAULT_HOME; }
+  try {
+    const savedCity = JSON.parse(localStorage.getItem("odysseus_home_city") || "null");
+    const homeCity = normalizeStoredCity(savedCity) || DEFAULT_HOME;
+    localStorage.setItem("odysseus_home_city", JSON.stringify(homeCity));
+    return homeCity;
+  }
   catch { return DEFAULT_HOME; }
 }
 function saveHomeCity() {
   localStorage.setItem("odysseus_home_city", JSON.stringify(state.homeCity));
+}
+
+function normalizeStoredCity(city) {
+  if (!city || typeof city !== "object" || !city.name) return null;
+
+  const lat = toFiniteNumber(city.lat ?? city.latitude);
+  const lon = toFiniteNumber(city.lon ?? city.longitude);
+
+  return {
+    ...city,
+    flag: city.flag || countryCodeToFlag(city.country_code),
+    tz: city.tz || city.timezone || "UTC",
+    ...(lat !== null ? { lat, latitude: lat } : {}),
+    ...(lon !== null ? { lon, longitude: lon } : {}),
+  };
+}
+
+function toFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function loadWeatherCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || "{}");
+    return cached && typeof cached === "object" && !Array.isArray(cached) ? cached : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveWeatherCache() {
+  try {
+    localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify(weatherCache));
+  } catch {}
+}
+
+function getWeatherCacheKey(city) {
+  const lat = toFiniteNumber(city.lat ?? city.latitude);
+  const lon = toFiniteNumber(city.lon ?? city.longitude);
+
+  if (lat !== null && lon !== null) {
+    return `coords:${lat.toFixed(4)},${lon.toFixed(4)}`;
+  }
+
+  return `city:${String(city.name || "").toLowerCase()}|${String(city.country || "").toLowerCase()}`;
+}
+
+function getCachedWeather(city) {
+  const cached = weatherCache[getWeatherCacheKey(city)];
+  if (!cached) return null;
+
+  const temp = Number(cached.temp);
+  const code = Number(cached.code);
+  const timestamp = Number(cached.timestamp);
+
+  if (!Number.isFinite(temp) || !Number.isFinite(code) || !Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  return {
+    temp,
+    code,
+    desc: cached.desc || WMO_DESC[code] || "N/D",
+    icon: cached.icon || WMO_MAP[code] || "🌡️",
+    timestamp,
+  };
+}
+
+function cacheWeather(city, weather) {
+  const cachedWeather = {
+    temp: weather.temp,
+    code: weather.code,
+    desc: weather.desc,
+    icon: weather.icon,
+    timestamp: Date.now(),
+  };
+
+  weatherCache[getWeatherCacheKey(city)] = cachedWeather;
+  saveWeatherCache();
+  return cachedWeather;
+}
+
+function isWeatherCacheFresh(weather) {
+  return Boolean(weather && Date.now() - weather.timestamp < WEATHER_CACHE_MAX_AGE);
+}
+
+function hydrateWeatherStateFromCache() {
+  const homeWeather = getCachedWeather(state.homeCity);
+  if (homeWeather) {
+    state.homeWeather = homeWeather;
+    weatherDebug("Cached home weather", {
+      city: state.homeCity.name,
+      fresh: isWeatherCacheFresh(homeWeather),
+    });
+  }
+
+  state.cities.forEach(city => {
+    const weather = getCachedWeather(city);
+    if (!weather) return;
+
+    state.weather[city.name] = weather;
+    weatherDebug("Cached city weather", {
+      city: city.name,
+      fresh: isWeatherCacheFresh(weather),
+    });
+  });
 }
 
 // TIME HELPERS
@@ -166,36 +296,113 @@ function getTimelineColor(tz) {
 }
 
 // WEATHER HELPERS
+function weatherDebug(label, value) {
+  if (DEBUG_WEATHER) console.log(`[Weather] ${label}`, value);
+}
+
 async function fetchWeather(city) {
   try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,weather_code&timezone=${encodeURIComponent(city.tz)}&forecast_days=1`;
+    const lat = toFiniteNumber(city.lat ?? city.latitude);
+    const lon = toFiniteNumber(city.lon ?? city.longitude);
+
+    weatherDebug("City input", {
+      name: city.name,
+      lat: city.lat,
+      lon: city.lon,
+      latitude: city.latitude,
+      longitude: city.longitude,
+      tz: city.tz,
+      timezone: city.timezone,
+    });
+
+    if (lat === null || lon === null) {
+      weatherDebug("Invalid coordinates", { name: city.name, lat, lon });
+      return null;
+    }
+
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=auto&forecast_days=1`;
+    weatherDebug("Request URL", url);
+
     const response = await fetch(url);
+    weatherDebug("Response status", response.status);
+
     const data = await response.json();
-    const temp = Math.round(data.current.temperature_2m);
-    const code = data.current.weather_code;
-    return { temp, icon: WMO_MAP[code] || "🌡️", desc: WMO_DESC[code] || "N/D" };
-  } catch { return null; }
+    weatherDebug("Response JSON", data);
+
+    if (!response.ok) {
+      weatherDebug("Request failed", { status: response.status, data });
+      return null;
+    }
+
+    const current = data.current || data.current_weather;
+    if (!current) {
+      weatherDebug(`Missing current weather data for ${city.name}`, data);
+      return null;
+    }
+
+    const temperature = current?.temperature_2m ?? current?.temperature;
+    const weatherCode = current?.weather_code ?? current?.weathercode;
+    const temp = Number(temperature);
+    const code = Number(weatherCode);
+
+    if (!Number.isFinite(temp) || !Number.isFinite(code)) {
+      weatherDebug("Invalid current weather values", { temperature, weatherCode });
+      return null;
+    }
+
+    return {
+      temp: Math.round(temp),
+      code,
+      icon: WMO_MAP[code] || "🌡️",
+      desc: WMO_DESC[code] || "N/D",
+    };
+  } catch (error) {
+    weatherDebug("Fetch error", error);
+    return null;
+  }
 }
 
 async function loadAllWeather() {
+  const cachedHomeWeather = state.homeWeather || getCachedWeather(state.homeCity);
+  state.homeWeather = cachedHomeWeather;
+  state.homeWeatherUnavailable = false;
+  render();
+
   const homeWeather = await fetchWeather(state.homeCity);
   if (homeWeather) {
-    state.homeWeather = homeWeather;
+    state.homeWeather = cacheWeather(state.homeCity, homeWeather);
     state.homeWeatherUnavailable = false;
-  } else {
+  } else if (!cachedHomeWeather) {
+    state.homeWeather = null;
     state.homeWeatherUnavailable = true;
   }
+  weatherDebug("Home state", {
+    city: state.homeCity.name,
+    weather: state.homeWeather,
+    unavailable: state.homeWeatherUnavailable,
+  });
   render();
 
   for (const city of state.cities) {
+    const cachedWeather = state.weather[city.name] || getCachedWeather(city);
+    if (cachedWeather) state.weather[city.name] = cachedWeather;
+    delete state.weatherUnavailable[city.name];
+    render();
+
     const cityData = hasCoordinates(city) ? city : findCityByName(city.name) || city;
     const weather = await fetchWeather(cityData);
     if (weather) {
-      state.weather[city.name] = weather;
+      state.weather[city.name] = cacheWeather(city, weather);
       delete state.weatherUnavailable[city.name];
-    } else {
+    } else if (!cachedWeather) {
+      delete state.weather[city.name];
       state.weatherUnavailable[city.name] = true;
     }
+    weatherDebug("City state", {
+      city: city.name,
+      weather: state.weather[city.name],
+      unavailable: state.weatherUnavailable[city.name] || false,
+    });
     render();
   }
 }
@@ -205,12 +412,32 @@ let searchTimer;
 let homeSearchTimer;
 let isOutsideClickBound = false;
 
+const MAIN_SEARCH_CONFIG = {
+  queryKey: "query",
+  resultsKey: "results",
+  loadingKey: "searchLoading",
+  errorKey: "searchError",
+  inputId: "search-input",
+  render: renderSearchResults,
+};
+
+const HOME_SEARCH_CONFIG = {
+  queryKey: "homeQuery",
+  resultsKey: "homeResults",
+  loadingKey: "homeSearchLoading",
+  errorKey: "homeSearchError",
+  inputId: "home-search-input",
+  render: renderHomeSearchResults,
+};
+
 function findCityByName(name) {
   return CITIES.find(city => city.name === name);
 }
 
 function hasCoordinates(city) {
-  return Number.isFinite(city.lat) && Number.isFinite(city.lon);
+  const lat = toFiniteNumber(city.lat ?? city.latitude);
+  const lon = toFiniteNumber(city.lon ?? city.longitude);
+  return lat !== null && lon !== null;
 }
 
 function countryCodeToFlag(countryCode) {
@@ -285,38 +512,7 @@ async function fetchGeocodingResults(query) {
 }
 
 function handleSearch(value) {
-  state.query = value;
-  clearTimeout(searchTimer);
-
-  const query = value.trim();
-  if (!query) {
-    state.results = [];
-    state.searchLoading = false;
-    state.searchError = "";
-    renderSearchResults();
-    return;
-  }
-
-  updateLocalSearchResults(query);
-
-  if (query.length < 3) {
-    state.searchLoading = false;
-    state.searchError = "";
-    renderSearchResults();
-    return;
-  }
-
-  state.searchLoading = true;
-  state.searchError = "";
-  renderSearchResults();
-
-  searchTimer = setTimeout(() => updateSearchResults(query), 180);
-}
-
-function updateLocalSearchResults(query) {
-  const normalizedQuery = query.toLowerCase();
-
-  state.results = findLocalCityMatches(normalizedQuery);
+  searchTimer = runCitySearch(value, MAIN_SEARCH_CONFIG, searchTimer);
 }
 
 function findLocalCityMatches(normalizedQuery) {
@@ -325,107 +521,86 @@ function findLocalCityMatches(normalizedQuery) {
   ).slice(0, 6);
 }
 
-async function updateSearchResults(value) {
-  const searchInput = document.getElementById("search-input");
-  const currentValue = (searchInput?.value ?? value).trim();
-
-  state.query = currentValue;
-  if (currentValue.length < 3) return;
-
-  try {
-    const localResults = state.results;
-    const apiResults = await fetchGeocodingResults(currentValue);
-
-    if (state.query.trim() !== currentValue) return;
-
-    state.results = mergeSearchResults(localResults, apiResults);
-    state.searchError = "";
-  } catch {
-    if (state.query.trim() !== currentValue) return;
-    state.searchError = navigator.onLine ? "Errore durante la ricerca" : "Ricerca non disponibile offline";
-  } finally {
-    if (state.query.trim() === currentValue) {
-      state.searchLoading = false;
-      renderSearchResults();
-    }
-  }
+function handleHomeSearch(value) {
+  homeSearchTimer = runCitySearch(value, HOME_SEARCH_CONFIG, homeSearchTimer);
 }
 
-function handleHomeSearch(value) {
-  state.homeQuery = value;
-  clearTimeout(homeSearchTimer);
+function runCitySearch(value, config, timer) {
+  clearTimeout(timer);
 
   const query = value.trim();
-  if (!query) {
-    state.homeResults = [];
-    state.homeSearchLoading = false;
-    state.homeSearchError = "";
-    renderHomeSearchResults();
-    return;
-  }
+  state[config.queryKey] = value;
+  state[config.resultsKey] = query
+    ? findLocalCityMatches(query.toLowerCase())
+    : [];
+  state[config.loadingKey] = query.length >= 3;
+  state[config.errorKey] = "";
+  config.render();
 
-  state.homeResults = findLocalCityMatches(query.toLowerCase());
+  if (query.length < 3) return null;
 
-  if (query.length < 3) {
-    state.homeSearchLoading = false;
-    state.homeSearchError = "";
-    renderHomeSearchResults();
-    return;
-  }
-
-  state.homeSearchLoading = true;
-  state.homeSearchError = "";
-  renderHomeSearchResults();
-
-  homeSearchTimer = setTimeout(() => updateHomeSearchResults(query), 180);
+  return setTimeout(() => updateCitySearchResults(query, config), 180);
 }
 
-async function updateHomeSearchResults(value) {
-  const homeInput = document.getElementById("home-search-input");
-  const currentValue = (homeInput?.value ?? value).trim();
+async function updateCitySearchResults(value, config) {
+  const searchInput = document.getElementById(config.inputId);
+  const currentValue = (searchInput?.value ?? value).trim();
 
-  state.homeQuery = currentValue;
+  state[config.queryKey] = currentValue;
   if (currentValue.length < 3) return;
 
   try {
-    const localResults = state.homeResults;
+    const localResults = findLocalCityMatches(currentValue.toLowerCase());
     const apiResults = await fetchGeocodingResults(currentValue);
 
-    if (state.homeQuery.trim() !== currentValue) return;
+    if (state[config.queryKey].trim() !== currentValue) return;
 
-    state.homeResults = mergeSearchResults(localResults, apiResults);
-    state.homeSearchError = "";
+    state[config.resultsKey] = mergeSearchResults(localResults, apiResults);
+    state[config.errorKey] = "";
   } catch {
-    if (state.homeQuery.trim() !== currentValue) return;
-    state.homeSearchError = navigator.onLine ? "Errore durante la ricerca" : "Ricerca non disponibile offline";
+    if (state[config.queryKey].trim() !== currentValue) return;
+    state[config.errorKey] = navigator.onLine
+      ? "Errore durante la ricerca"
+      : "Ricerca non disponibile offline";
   } finally {
-    if (state.homeQuery.trim() === currentValue) {
-      state.homeSearchLoading = false;
-      renderHomeSearchResults();
+    if (state[config.queryKey].trim() === currentValue) {
+      state[config.loadingKey] = false;
+      config.render();
     }
   }
+}
+
+function resetCitySearch(config) {
+  state[config.queryKey] = "";
+  state[config.resultsKey] = [];
+  state[config.loadingKey] = false;
+  state[config.errorKey] = "";
 }
 
 function setHomeCity(city) {
   clearTimeout(homeSearchTimer);
+  homeSearchTimer = null;
   state.homeCity = city;
   state.homeSearchOpen = false;
-  state.homeQuery = "";
-  state.homeResults = [];
-  state.homeSearchLoading = false;
-  state.homeSearchError = "";
-  state.homeWeather = null;
+  resetCitySearch(HOME_SEARCH_CONFIG);
+  const cachedWeather = getCachedWeather(city);
+  state.homeWeather = cachedWeather;
   state.homeWeatherUnavailable = false;
   saveHomeCity();
   render();
 
   fetchWeather(city).then(weather => {
     if (weather) {
-      state.homeWeather = weather;
+      state.homeWeather = cacheWeather(city, weather);
       state.homeWeatherUnavailable = false;
-    } else {
+    } else if (!cachedWeather) {
       state.homeWeatherUnavailable = true;
     }
+    weatherDebug("Home state after change", {
+      city: city.name,
+      weather: state.homeWeather,
+      unavailable: state.homeWeatherUnavailable,
+    });
     render();
   });
 }
@@ -436,19 +611,28 @@ function addCity(city) {
     return;
   }
   clearTimeout(searchTimer);
+  searchTimer = null;
   state.cities.push(city);
   saveCities();
-  state.query = "";
-  state.results = [];
-  state.searchLoading = false;
-  state.searchError = "";
+  resetCitySearch(MAIN_SEARCH_CONFIG);
+  const cachedWeather = getCachedWeather(city);
+  if (cachedWeather) {
+    state.weather[city.name] = cachedWeather;
+    delete state.weatherUnavailable[city.name];
+  }
+
   fetchWeather(city).then(w => {
     if (w) {
-      state.weather[city.name] = w;
+      state.weather[city.name] = cacheWeather(city, w);
       delete state.weatherUnavailable[city.name];
-    } else {
+    } else if (!cachedWeather) {
       state.weatherUnavailable[city.name] = true;
     }
+    weatherDebug("City state after add", {
+      city: city.name,
+      weather: state.weather[city.name],
+      unavailable: state.weatherUnavailable[city.name] || false,
+    });
     render();
   });
   showToast(`${city.flag} ${city.name} aggiunta`);
@@ -498,8 +682,20 @@ function showToast(msg) {
 // RENDERING
 function render() {
   const app = document.getElementById("app");
+  const activeInput = document.activeElement;
+  const activeInputId = activeInput?.matches?.("#search-input, #home-search-input")
+    ? activeInput.id
+    : null;
+  const cursorPosition = activeInputId ? activeInput.selectionStart : null;
+
   app.innerHTML = buildHTML();
   attachEvents();
+
+  if (activeInputId) {
+    const nextInput = document.getElementById(activeInputId);
+    nextInput?.focus({ preventScroll: true });
+    if (cursorPosition !== null) nextInput?.setSelectionRange(cursorPosition, cursorPosition);
+  }
 }
 
 function buildHTML() {
@@ -732,13 +928,12 @@ function buildCityCard(c, index) {
   const status = getStatus(c.tz);
   const weather = state.weather[c.name];
   const weatherUnavailable = state.weatherUnavailable[c.name];
-  const isShowDelete = state.showDelete === c.name;
+  const showActions = state.showDelete === c.name;
   const isFirst = index === 0;
   const isLast = index === state.cities.length - 1;
 
   return `
-  <div class="city-card ${isShowDelete ? 'show-delete':''}" data-city="${escHtml(c.name)}" id="card-${escHtml(c.name).replace(/\s/g,'_')}">
-    <button class="delete-btn" data-remove="${escHtml(c.name)}" title="Rimuovi">✕</button>
+  <div class="city-card ${showActions ? "show-actions" : ""}" data-city="${escHtml(c.name)}" id="card-${escHtml(c.name).replace(/\s/g,'_')}">
     <div class="city-card-top">
       <div class="city-card-left">
         <div class="city-card-name-row">
@@ -748,10 +943,6 @@ function buildCityCard(c, index) {
         <div class="city-country">${escHtml(c.country)} · ${escHtml(diff)}</div>
       </div>
       <div class="city-card-right">
-        <div class="reorder-controls">
-          <button class="reorder-btn" data-move-up="${escHtml(c.name)}" title="Sposta su" ${isFirst ? "disabled" : ""}>↑</button>
-          <button class="reorder-btn" data-move-down="${escHtml(c.name)}" title="Sposta giù" ${isLast ? "disabled" : ""}>↓</button>
-        </div>
         <div class="city-time-wrap">
           <div class="city-time">${formatTime(t)}</div>
           <div class="city-diff">${formatDate(t)}</div>
@@ -771,10 +962,23 @@ function buildCityCard(c, index) {
         ${weather
           ? `<span class="city-weather-icon">${weather.icon}</span><span class="city-weather-temp">${weather.temp}°C</span>`
           : weatherUnavailable
-            ? `<span class="city-weather-loading">N/D</span>`
-          : `<span class="city-weather-loading">…</span>`
+            ? `<span class="city-weather-loading">Meteo non disponibile</span>`
+          : `<span class="city-weather-loading">Caricamento...</span>`
         }
       </div>
+    </div>
+    <div class="city-actions">
+      ${!isFirst ? `
+      <button class="city-action-btn" data-move-up="${escHtml(c.name)}" title="Sposta su">
+        <span aria-hidden="true">↑</span> Sposta su
+      </button>` : ""}
+      ${!isLast ? `
+      <button class="city-action-btn" data-move-down="${escHtml(c.name)}" title="Sposta giù">
+        <span aria-hidden="true">↓</span> Sposta giù
+      </button>` : ""}
+      <button class="city-action-btn city-action-remove" data-remove="${escHtml(c.name)}" title="Rimuovi">
+        <span aria-hidden="true">✕</span> Rimuovi
+      </button>
     </div>
   </div>`;
 }
@@ -788,11 +992,10 @@ function attachEvents() {
   const homeChangeButton = document.getElementById("home-change-btn");
   if (homeChangeButton) {
     homeChangeButton.addEventListener("click", () => {
+      clearTimeout(homeSearchTimer);
+      homeSearchTimer = null;
       state.homeSearchOpen = !state.homeSearchOpen;
-      state.homeQuery = "";
-      state.homeResults = [];
-      state.homeSearchLoading = false;
-      state.homeSearchError = "";
+      resetCitySearch(HOME_SEARCH_CONFIG);
       render();
     });
   }
@@ -914,7 +1117,8 @@ function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
 
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./service-worker.js")
+    navigator.serviceWorker.register("./service-worker.js", { updateViaCache: "none" })
+      .then(registration => registration.update().catch(() => {}))
       .catch(error => console.warn("Service worker registration failed:", error));
   });
 }
@@ -923,12 +1127,6 @@ function registerServiceWorker() {
 registerServiceWorker();
 render();
 loadAllWeather();
-
-state.cities.forEach(async city => {
-  const cityData = hasCoordinates(city) ? city : findCityByName(city.name) || city;
-  const weather = await fetchWeather(cityData);
-  if (weather) { state.weather[city.name] = weather; render(); }
-});
 
 setInterval(tick, 1000);
 

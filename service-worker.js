@@ -1,10 +1,10 @@
-const CACHE_NAME = "odysseus-static-v7";
+const CACHE_NAME = "odysseus-static-v12";
 
 const STATIC_ASSETS = [
   "./",
   "./index.html",
-  "./assets/css/style.css",
-  "./assets/js/app.js",
+  "./assets/css/style.css?v=10",
+  "./assets/js/app.js?v=12",
   "./manifest.webmanifest",
   "./assets/icons/icon-192.png",
   "./assets/icons/icon-512.png",
@@ -32,6 +32,7 @@ self.addEventListener("fetch", event => {
   const requestUrl = new URL(event.request.url);
 
   if (requestUrl.origin !== self.location.origin) return;
+  if (event.request.method !== "GET") return;
 
   if (event.request.mode === "navigate") {
     event.respondWith(
@@ -41,6 +42,14 @@ self.addEventListener("fetch", event => {
   }
 
   event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request))
+    fetch(event.request)
+      .then(response => {
+        if (response.ok) {
+          const responseCopy = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseCopy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
