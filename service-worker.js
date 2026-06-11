@@ -1,4 +1,4 @@
-const CACHE_NAME = "odysseus-static-v13";
+const CACHE_NAME = "odysseus-static-v14";
 
 const STATIC_ASSETS = [
   "./",
@@ -7,6 +7,7 @@ const STATIC_ASSETS = [
   "./assets/js/app.js?v=13",
   "./manifest.webmanifest",
   "./assets/brand/odysseus-emblem.png",
+  "./favicon.ico",
   "./assets/icons/favicon-32x32.png",
   "./assets/icons/apple-touch-icon.png",
   "./assets/icons/icon-192.png",
