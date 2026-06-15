@@ -1,10 +1,10 @@
-const CACHE_NAME = "odysseus-static-v14";
+const CACHE_NAME = "odysseus-static-v15";
 
 const STATIC_ASSETS = [
   "./",
   "./index.html",
-  "./assets/css/style.css?v=13",
-  "./assets/js/app.js?v=13",
+  "./assets/css/style.css?v=15",
+  "./assets/js/app.js?v=15",
   "./manifest.webmanifest",
   "./assets/brand/odysseus-emblem.png",
   "./favicon.ico",

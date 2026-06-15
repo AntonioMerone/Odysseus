@@ -411,6 +411,8 @@ async function loadAllWeather() {
 let searchTimer;
 let homeSearchTimer;
 let isOutsideClickBound = false;
+let isEscapeKeyBound = false;
+let isMainSearchDismissed = false;
 
 const MAIN_SEARCH_CONFIG = {
   queryKey: "query",
@@ -527,6 +529,7 @@ function handleHomeSearch(value) {
 
 function runCitySearch(value, config, timer) {
   clearTimeout(timer);
+  if (config === MAIN_SEARCH_CONFIG) isMainSearchDismissed = false;
 
   const query = value.trim();
   state[config.queryKey] = value;
@@ -553,6 +556,7 @@ async function updateCitySearchResults(value, config) {
     const localResults = findLocalCityMatches(currentValue.toLowerCase());
     const apiResults = await fetchGeocodingResults(currentValue);
 
+    if (config === MAIN_SEARCH_CONFIG && isMainSearchDismissed) return;
     if (state[config.queryKey].trim() !== currentValue) return;
 
     state[config.resultsKey] = mergeSearchResults(localResults, apiResults);
@@ -563,7 +567,10 @@ async function updateCitySearchResults(value, config) {
       ? "Errore durante la ricerca"
       : "Ricerca non disponibile offline";
   } finally {
-    if (state[config.queryKey].trim() === currentValue) {
+    if (
+      state[config.queryKey].trim() === currentValue &&
+      !(config === MAIN_SEARCH_CONFIG && isMainSearchDismissed)
+    ) {
       state[config.loadingKey] = false;
       config.render();
     }
@@ -727,6 +734,7 @@ function buildHeader() {
         placeholder="Cerca una città..."
         value="${escHtml(state.query)}"
         id="search-input"
+        aria-label="Cerca una città"
         autocomplete="off"
         autocorrect="off"
       />
@@ -755,7 +763,7 @@ function buildHomeCard() {
       <div class="home-city-row">
         <span class="home-flag">${homeCity.flag}</span>
         <span class="home-city-name">${homeCity.name} — La tua posizione</span>
-        <button class="home-change-btn" id="home-change-btn">Cambia</button>
+        <button class="home-change-btn" id="home-change-btn" aria-label="Cambia città di casa">Cambia</button>
       </div>
       <div class="home-clock-time" id="home-clock">${formatTime(homeTime)}</div>
       <div class="home-date">${formatDate(homeTime)}</div>
@@ -783,6 +791,7 @@ function buildHomeSearch() {
           placeholder="Cerca la tua città..."
           value="${escHtml(state.homeQuery)}"
           id="home-search-input"
+          aria-label="Cerca la città di casa"
           autocomplete="off"
           autocorrect="off"
         />
@@ -816,6 +825,8 @@ function buildToast() {
 }
 
 function buildSearchDropdown() {
+  if (isMainSearchDismissed) return "";
+
   return buildCitySearchDropdown({
     id: "search-dropdown",
     className: "search-dropdown",
@@ -972,14 +983,14 @@ function buildCityCard(c, index) {
     </div>
     <div class="city-actions">
       ${!isFirst ? `
-      <button class="city-action-btn" data-move-up="${escHtml(c.name)}" title="Sposta su">
+      <button class="city-action-btn" data-move-up="${escHtml(c.name)}" title="Sposta su" aria-label="Sposta ${escHtml(c.name)} su">
         <span aria-hidden="true">↑</span> Sposta su
       </button>` : ""}
       ${!isLast ? `
-      <button class="city-action-btn" data-move-down="${escHtml(c.name)}" title="Sposta giù">
+      <button class="city-action-btn" data-move-down="${escHtml(c.name)}" title="Sposta giù" aria-label="Sposta ${escHtml(c.name)} giù">
         <span aria-hidden="true">↓</span> Sposta giù
       </button>` : ""}
-      <button class="city-action-btn city-action-remove" data-remove="${escHtml(c.name)}" title="Rimuovi">
+      <button class="city-action-btn city-action-remove" data-remove="${escHtml(c.name)}" title="Rimuovi" aria-label="Rimuovi ${escHtml(c.name)}">
         <span aria-hidden="true">✕</span> Rimuovi
       </button>
     </div>
@@ -987,7 +998,7 @@ function buildCityCard(c, index) {
 }
 
 function escHtml(s) {
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
 // EVENTS
@@ -1055,6 +1066,7 @@ function attachEvents() {
   });
 
   attachOutsideSearchListener();
+  attachEscapeKeyListener();
 }
 
 function attachSearchResultEvents() {
@@ -1088,6 +1100,57 @@ function attachOutsideSearchListener() {
   });
 
   isOutsideClickBound = true;
+}
+
+function attachEscapeKeyListener() {
+  if (isEscapeKeyBound) return;
+
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+
+    let handled = false;
+    const activeElement = document.activeElement;
+    const homeSearchWrap = document.getElementById("home-search-wrap");
+    const openCityCard = document.querySelector(".city-card.show-actions");
+
+    if (document.getElementById("search-dropdown")) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+      isMainSearchDismissed = true;
+      state.results = [];
+      state.searchLoading = false;
+      state.searchError = "";
+      document.getElementById("search-dropdown")?.remove();
+      handled = true;
+    }
+
+    if (state.homeSearchOpen) {
+      clearTimeout(homeSearchTimer);
+      homeSearchTimer = null;
+      state.homeSearchOpen = false;
+      resetCitySearch(HOME_SEARCH_CONFIG);
+      homeSearchWrap?.remove();
+      if (homeSearchWrap?.contains(activeElement)) {
+        document.getElementById("home-change-btn")?.focus({ preventScroll: true });
+      }
+      handled = true;
+    }
+
+    if (openCityCard) {
+      const focusWasInActions = openCityCard.querySelector(".city-actions")?.contains(activeElement);
+      state.showDelete = null;
+      openCityCard.classList.remove("show-actions");
+      if (focusWasInActions) {
+        openCityCard.setAttribute("tabindex", "-1");
+        openCityCard.focus({ preventScroll: true });
+      }
+      handled = true;
+    }
+
+    if (handled) event.preventDefault();
+  });
+
+  isEscapeKeyBound = true;
 }
 
 // TICK
